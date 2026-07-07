@@ -68,16 +68,23 @@ Design intent behind these boundaries (so future issues don't need refactors):
 
 **Vehicle & physics blueprint:**
 - Player car: old yellow voxel vehicle.
-- Lightweight Rapier rigid body (not yet wired up — Task 1 only initializes the Rapier `World`, no body on the car yet).
+- Lightweight Rapier rigid body — wired up as of the rigid-body vehicle work (see Status).
 - Controls: drive/steer, dedicated boost, handbrake modifier.
 - Drift logic: holding handbrake should drastically lower lateral friction while applying a subtle rotational force, for high-angle arcade-style drifting.
 - Exhaust smoke: continuous trail of basic mesh/point particles from the rear.
 
 ## Status
 
-**Task 1 (done):** Vite/TS scaffold, Three.js scene + flat ground plane, Rapier WASM initialized (world steps every frame, no bodies attached yet), yellow box car moved via plain keyboard-driven transform math (no physics forces yet), simple chase camera. Verified: typecheck clean, dev/build/preview all work, headless-browser check confirmed rendering with zero console errors and that WASD actually changes the car's position/rotation.
+**Task 1 (done):** Vite/TS scaffold, Three.js scene + flat ground plane, Rapier WASM initialized, yellow box car moved via plain keyboard-driven transform math, simple chase camera. (GitHub PR #1)
 
-**Next up (not started):** attaching a real Rapier rigid body/vehicle controller to the car, replacing the transform-based movement in `entities/car.ts`.
+**Rigid-body vehicle (done, GitHub issue #2):** Car is now a `THREE.Group` (body block + smaller cabin block + 4 wheel cylinders) driven by a real dynamic Rapier rigid body — see `entities/car.ts`. Key points:
+- `applyControls(input, dt)` sets the body's linear velocity (forward/back, ramped via a `currentSpeed` accel model, y-velocity preserved so gravity still applies) and angular velocity (steering) directly — called *before* `world.step()`.
+- Rotations locked to Y-only (`enabledRotations(false, true, false)`) so the car can't tip over.
+- `syncFromPhysics(dt)` reads the body's translation/rotation *after* `world.step()` and applies it to the visual `group`, and spins the wheel meshes based on `currentSpeed`. Wheel geometry is pre-rotated once at creation (`wheelGeometry.rotateZ(Math.PI/2)`) so animating `wheel.rotation.x` each frame is a correct rolling spin, not a compound-Euler hack.
+- The ground (`world/ground.ts`) now also creates a matching static Rapier collider (a thin cuboid) so the car actually rests/collides with it instead of just visually overlapping.
+- Verified: typecheck clean, dev/build/preview all work, headless-browser check confirmed the car falls under gravity and settles at the correct height, drives forward, and turns — all with zero console errors.
+
+**Next up (not started):** boost/handbrake input (issue #3), arcade drift on handbrake (issue #4), exhaust smoke (issue #5), instanced environment trees (issue #6), bounciness/procedural animation tuning (issue #7), AI-gen texture/palette exploration (issue #8).
 
 ## Working style
 

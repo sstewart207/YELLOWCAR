@@ -12,11 +12,11 @@ async function bootstrap() {
   const { scene, camera, renderer } = createScene(container);
   const world = await initPhysics();
 
-  const ground = createGround();
+  const ground = createGround(world);
   scene.add(ground);
 
-  const car = new Car();
-  scene.add(car.mesh);
+  const car = new Car(world);
+  scene.add(car.group);
 
   const input = new InputManager();
 
@@ -25,18 +25,19 @@ async function bootstrap() {
 
   function tick() {
     const now = performance.now();
-    const dt = (now - lastTime) / 1000;
+    const dt = Math.min((now - lastTime) / 1000, 0.1);
     lastTime = now;
 
+    car.applyControls(input, dt);
     world.step();
-    car.update(input, dt);
+    car.syncFromPhysics(dt);
 
     const desiredCameraPos = cameraOffset
       .clone()
-      .applyEuler(car.mesh.rotation)
-      .add(car.mesh.position);
+      .applyEuler(car.group.rotation)
+      .add(car.group.position);
     camera.position.copy(desiredCameraPos);
-    camera.lookAt(car.mesh.position);
+    camera.lookAt(car.group.position);
 
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
