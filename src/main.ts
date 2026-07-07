@@ -4,6 +4,7 @@ import { initPhysics } from './core/physics';
 import { InputManager } from './core/input';
 import { createGround } from './world/ground';
 import { Car } from './entities/car';
+import { PauseMenu } from './ui/pauseMenu';
 
 async function bootstrap() {
   const container = document.getElementById('app');
@@ -19,6 +20,7 @@ async function bootstrap() {
   scene.add(car.group);
 
   const input = new InputManager();
+  const menu = new PauseMenu(() => car.respawn());
 
   const cameraOffset = new THREE.Vector3(0, 4, -8);
   const cameraPos = new THREE.Vector3();
@@ -35,15 +37,17 @@ async function bootstrap() {
     const dt = Math.min((now - lastTime) / 1000, 0.1);
     lastTime = now;
 
-    accumulator += dt;
-    let simTime = 0;
-    while (accumulator >= PHYSICS_STEP) {
-      car.applyControls(input, PHYSICS_STEP);
-      world.step();
-      accumulator -= PHYSICS_STEP;
-      simTime += PHYSICS_STEP;
+    if (!menu.paused) {
+      accumulator += dt;
+      let simTime = 0;
+      while (accumulator >= PHYSICS_STEP) {
+        car.applyControls(input, PHYSICS_STEP);
+        world.step();
+        accumulator -= PHYSICS_STEP;
+        simTime += PHYSICS_STEP;
+      }
+      car.syncFromPhysics(simTime);
     }
-    car.syncFromPhysics(simTime);
 
     cameraPos.copy(cameraOffset).applyEuler(car.group.rotation).add(car.group.position);
     camera.position.copy(cameraPos);

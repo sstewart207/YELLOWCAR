@@ -125,6 +125,14 @@ export class Car {
     this.body.setAngvel({ x: 0, y: turnInput * turnRate, z: 0 }, true);
   }
 
+  respawn(): void {
+    this.body.setTranslation({ x: 0, y: 1, z: 0 }, true);
+    this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+    this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.forwardSpeed = 0;
+  }
+
   syncFromPhysics(dt: number): void {
     const t = this.body.translation();
     const r = this.body.rotation();

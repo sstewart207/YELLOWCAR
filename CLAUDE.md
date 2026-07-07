@@ -48,7 +48,9 @@ src/
     physics.ts         # initPhysics(): await RAPIER.init(); returns a stepping RAPIER.World
     input.ts           # InputManager: keydown/keyup -> forward/back/left/right/boost/handbrake getters; clears keys on blur
   entities/
-    car.ts             # Car class: multi-box Group + Rapier rigid body; applyControls(input, dt) / syncFromPhysics(dt)
+    car.ts             # Car class: multi-box Group + Rapier rigid body; applyControls(input, dt) / syncFromPhysics(dt) / respawn()
+  ui/
+    pauseMenu.ts       # PauseMenu: liquid-glass pause overlay (Esc or top-right button); Resume/Restart; injects its own CSS
   world/
     ground.ts          # createGround(): flat ground plane factory
 ```
@@ -100,6 +102,8 @@ Design intent behind these boundaries (so future issues don't need refactors):
 - **Hot-loop allocations hoisted**: `applyControls` and the camera follow use module/closure-scope scratch objects instead of per-frame `new`/`clone()`.
 
 Known deferred findings (intentional, revisit later): planar velocity/angvel are still hard-overwritten each frame, which defeats Rapier's collision response for walls/obstacles — must move to impulse-based control (or blend solver velocity) as part of issues #6/#7; wheel spin uses commanded forward speed (cosmetically fine); car heading→direction math is duplicated between `car.ts` and the camera in `main.ts`.
+
+**Pause menu (done):** `src/ui/pauseMenu.ts` — Apple-liquid-glass-styled DOM overlay (layered CSS glass: translucent blue gradient + `backdrop-filter: blur/saturate` + specular rim border + inner highlight; the SVG-displacement refraction layer was deliberately skipped as Chromium-only and GPU-heavy per the iGPU guardrail). Esc or the top-right glass button pauses; Resume/Restart buttons; Restart calls `car.respawn()` (resets body transform + velocities + `forwardSpeed`). While paused, `main.ts` skips accumulator feed and stepping but keeps rendering so the glass has a live frame to blur. Buttons call `.blur()` after click so a focused button can't be re-triggered by Space (handbrake).
 
 **Next up (not started):** exhaust smoke (issue #5), instanced environment trees (issue #6), bounciness/procedural animation tuning (issue #7), AI-gen texture/palette exploration (issue #8).
 
