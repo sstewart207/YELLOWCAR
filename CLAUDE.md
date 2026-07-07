@@ -2,6 +2,27 @@
 
 A 3D voxel driving playground: Three.js + Vite + Rapier Physics (WASM), built issue-by-issue.
 
+## Original project brief (verbatim)
+
+This is the initial prompt that kicked off the project, kept verbatim so future sessions have the exact original intent, not just a paraphrase:
+
+> Act as my lead game developer. We are building a 3D voxel driving playground using Three.js, Vite, and Rapier Physics (WASM). We are using an iterative, issue-by-issue development approach. Please acknowledge these architectural and design guardrails before writing code:
+>
+> Aesthetics & Performance (iGPU Target):
+> 3D voxel graphics with a Crossy Road aesthetic.
+> To keep performance smooth on an integrated GPU, utilize InstancedMesh for rendering repetitive voxel elements (like environment trees) to keep draw calls near single digits. Use basic vertex-lit or unlit materials (no heavy post-processing shaders).
+>
+> Vehicle & Physics Blueprint:
+> The player car is an old yellow voxel vehicle.
+> Implement the vehicle using a lightweight Rapier rigid body.
+> Controls: Standard drive/steer, a dedicated boost, and a handbrake modifier.
+> Drift Logic: When handbrake is held, drastically lower lateral friction while applying a subtle rotational force to allow high-angle, fluid arcade drifting.
+> Smoke: Emitting a continuous trail of basic mesh/point particles from the rear exhaust.
+>
+> Task 1: Create the project scaffold using Vite (Vanilla JS/TS or React, whichever keeps code cleaner for this setup), install Three.js and @dimforge/rapier3d, and render a basic flat ground plane with a controllable keyboard-input box representing the car. Stop and wait for my input once the loop runs.
+
+The guardrails section below restates these as living project rules (kept in sync as decisions get made, e.g. TypeScript was chosen, and `@dimforge/rapier3d-compat` was substituted for the plain `@dimforge/rapier3d` package — see Stack section for why).
+
 ## Stack
 
 - **Vite** (`vanilla-ts` template) — dev server + build
