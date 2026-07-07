@@ -8,16 +8,26 @@ const WHEEL_RADIUS = 0.28;
 const WHEEL_WIDTH = 0.2;
 
 const MAX_SPEED = 8;
+const BOOST_SPEED = 13;
 const REVERSE_SPEED = 4;
 const ACCEL = 10;
 const TURN_RATE = 2.8;
+const DRIFT_TURN_ASSIST = 1.6;
+const NORMAL_GRIP = 24;
+const DRIFT_GRIP = 2.5;
+
+function moveToward(current: number, target: number, maxDelta: number): number {
+  const delta = target - current;
+  if (Math.abs(delta) <= maxDelta) return target;
+  return current + Math.sign(delta) * maxDelta;
+}
 
 export class Car {
   readonly group: THREE.Group;
 
   private body: RAPIER.RigidBody;
   private wheels: THREE.Mesh[];
-  private currentSpeed = 0;
+  private forwardSpeed = 0;
 
   constructor(world: RAPIER.World) {
     this.group = new THREE.Group();
@@ -73,23 +83,32 @@ export class Car {
     const rotation = this.body.rotation();
     const quat = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
-
-    let targetSpeed = 0;
-    if (input.forward) targetSpeed = MAX_SPEED;
-    else if (input.back) targetSpeed = -REVERSE_SPEED;
-
-    const speedDelta = targetSpeed - this.currentSpeed;
-    const maxStep = ACCEL * dt;
-    this.currentSpeed += Math.sign(speedDelta) * Math.min(Math.abs(speedDelta), maxStep);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(quat);
 
     const linvel = this.body.linvel();
-    const planar = forward.multiplyScalar(this.currentSpeed);
-    this.body.setLinvel({ x: planar.x, y: linvel.y, z: planar.z }, true);
+    const planarVel = new THREE.Vector3(linvel.x, 0, linvel.z);
+    const forwardSpeed = planarVel.dot(forward);
+    const lateralSpeed = planarVel.dot(right);
+
+    let targetForwardSpeed = 0;
+    if (input.forward) targetForwardSpeed = input.boost ? BOOST_SPEED : MAX_SPEED;
+    else if (input.back) targetForwardSpeed = -REVERSE_SPEED;
+    this.forwardSpeed = moveToward(forwardSpeed, targetForwardSpeed, ACCEL * dt);
+
+    const grip = input.handbrake ? DRIFT_GRIP : NORMAL_GRIP;
+    const newLateralSpeed = moveToward(lateralSpeed, 0, grip * dt);
+
+    const newVel = forward
+      .clone()
+      .multiplyScalar(this.forwardSpeed)
+      .add(right.clone().multiplyScalar(newLateralSpeed));
+    this.body.setLinvel({ x: newVel.x, y: linvel.y, z: newVel.z }, true);
 
     let turnInput = 0;
     if (input.left) turnInput += 1;
     if (input.right) turnInput -= 1;
-    this.body.setAngvel({ x: 0, y: turnInput * TURN_RATE, z: 0 }, true);
+    const turnRate = input.handbrake && turnInput !== 0 ? TURN_RATE + DRIFT_TURN_ASSIST : TURN_RATE;
+    this.body.setAngvel({ x: 0, y: turnInput * turnRate, z: 0 }, true);
   }
 
   syncFromPhysics(dt: number): void {
@@ -98,7 +117,7 @@ export class Car {
     this.group.position.set(t.x, t.y, t.z);
     this.group.quaternion.set(r.x, r.y, r.z, r.w);
 
-    const spin = (this.currentSpeed / WHEEL_RADIUS) * dt;
+    const spin = (this.forwardSpeed / WHEEL_RADIUS) * dt;
     for (const wheel of this.wheels) {
       wheel.rotation.x += spin;
     }

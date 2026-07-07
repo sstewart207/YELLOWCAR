@@ -78,13 +78,19 @@ Design intent behind these boundaries (so future issues don't need refactors):
 **Task 1 (done):** Vite/TS scaffold, Three.js scene + flat ground plane, Rapier WASM initialized, yellow box car moved via plain keyboard-driven transform math, simple chase camera. (GitHub PR #1)
 
 **Rigid-body vehicle (done, GitHub issue #2):** Car is now a `THREE.Group` (body block + smaller cabin block + 4 wheel cylinders) driven by a real dynamic Rapier rigid body — see `entities/car.ts`. Key points:
-- `applyControls(input, dt)` sets the body's linear velocity (forward/back, ramped via a `currentSpeed` accel model, y-velocity preserved so gravity still applies) and angular velocity (steering) directly — called *before* `world.step()`.
+- `applyControls(input, dt)` sets the body's linear velocity and angular velocity directly — called *before* `world.step()`.
 - Rotations locked to Y-only (`enabledRotations(false, true, false)`) so the car can't tip over.
-- `syncFromPhysics(dt)` reads the body's translation/rotation *after* `world.step()` and applies it to the visual `group`, and spins the wheel meshes based on `currentSpeed`. Wheel geometry is pre-rotated once at creation (`wheelGeometry.rotateZ(Math.PI/2)`) so animating `wheel.rotation.x` each frame is a correct rolling spin, not a compound-Euler hack.
+- `syncFromPhysics(dt)` reads the body's translation/rotation *after* `world.step()` and applies it to the visual `group`, and spins the wheel meshes based on `forwardSpeed`. Wheel geometry is pre-rotated once at creation (`wheelGeometry.rotateZ(Math.PI/2)`) so animating `wheel.rotation.x` each frame is a correct rolling spin, not a compound-Euler hack.
 - The ground (`world/ground.ts`) now also creates a matching static Rapier collider (a thin cuboid) so the car actually rests/collides with it instead of just visually overlapping.
-- Verified: typecheck clean, dev/build/preview all work, headless-browser check confirmed the car falls under gravity and settles at the correct height, drives forward, and turns — all with zero console errors.
 
-**Next up (not started):** boost/handbrake input (issue #3), arcade drift on handbrake (issue #4), exhaust smoke (issue #5), instanced environment trees (issue #6), bounciness/procedural animation tuning (issue #7), AI-gen texture/palette exploration (issue #8).
+**Boost, handbrake, and arcade drift (done, GitHub issues #3 and #4):** `applyControls` now decomposes the body's planar velocity into forward/lateral components (via dot products against the car's forward/right axes each frame) instead of only ever setting a pure-forward velocity:
+- Throttle ramps the **forward** component toward a target speed (`MAX_SPEED`, or `BOOST_SPEED` while `input.boost` — Left/Right Shift — is held; `REVERSE_SPEED` for reverse) at a fixed acceleration.
+- The **lateral** component decays toward 0 at a "grip" rate each frame — `NORMAL_GRIP` (fast, near-zero slip) normally, or `DRIFT_GRIP` (much slower) while `input.handbrake` (Space) is held. This is the "drastically lower lateral friction" behavior from the brief — it only works because velocity is decomposed into axes first; a naive "always set velocity = forward * speed" model (what Task 2 originally had) has no lateral component to loosen.
+- Steering adds `DRIFT_TURN_ASSIST` extra angular velocity on top of `TURN_RATE` while handbraking and turning — the "subtle rotational force" that helps the car rotate into the slide instead of just sliding straight.
+- `core/input.ts` gained `boost`/`handbrake` getters (Shift / Space) and now calls `preventDefault()` on all recognized action keys to stop Space from scrolling the page.
+- Verified numerically via a headless browser reading the rigid body's actual velocity: turning without handbrake keeps lateral speed under ~5% of total speed; turning with handbrake held pushes lateral speed to ~60% of total speed — a real, controllable slide, not cosmetic. Boost was confirmed to push speed measurably past `MAX_SPEED`.
+
+**Next up (not started):** exhaust smoke (issue #5), instanced environment trees (issue #6), bounciness/procedural animation tuning (issue #7), AI-gen texture/palette exploration (issue #8).
 
 ## Working style
 
