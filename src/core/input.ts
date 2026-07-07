@@ -23,6 +23,13 @@ export class InputManager {
       this.keys.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+
+    // Keyup events fire on whatever has focus, so losing focus mid-press
+    // would otherwise leave keys stuck down (car driving itself on Alt-Tab).
+    window.addEventListener('blur', () => this.keys.clear());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.keys.clear();
+    });
   }
 
   private isAnyDown(codes: string[]): boolean {

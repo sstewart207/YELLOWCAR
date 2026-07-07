@@ -12,15 +12,19 @@ const BOOST_SPEED = 13;
 const REVERSE_SPEED = 4;
 const ACCEL = 10;
 const TURN_RATE = 2.8;
-const DRIFT_TURN_ASSIST = 1.6;
+const DRIFT_TURN_ASSIST = 1.2;
 const NORMAL_GRIP = 24;
-const DRIFT_GRIP = 2.5;
+const DRIFT_GRIP = 8;
 
 function moveToward(current: number, target: number, maxDelta: number): number {
   const delta = target - current;
   if (Math.abs(delta) <= maxDelta) return target;
   return current + Math.sign(delta) * maxDelta;
 }
+
+const _quat = new THREE.Quaternion();
+const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
 
 export class Car {
   readonly group: THREE.Group;
@@ -73,22 +77,29 @@ export class Car {
       .setAngularDamping(4);
     this.body = world.createRigidBody(bodyDesc);
 
-    const colliderDesc = RAPIER.ColliderDesc.cuboid(BODY_SIZE.x / 2, BODY_SIZE.y / 2, BODY_SIZE.z / 2)
-      .setFriction(0.8)
+    // Collider spans from body top down to the wheel bottoms so the car
+    // rests on its wheels rather than sinking them through the ground.
+    const wheelBottom = wheelOffsetY - WHEEL_RADIUS;
+    const colliderHalfY = (BODY_SIZE.y / 2 - wheelBottom) / 2;
+    const colliderCenterY = (BODY_SIZE.y / 2 + wheelBottom) / 2;
+    // Friction is zero because applyControls implements grip itself (NORMAL_GRIP /
+    // DRIFT_GRIP); contact friction on top would fight the drive model every step.
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(BODY_SIZE.x / 2, colliderHalfY, BODY_SIZE.z / 2)
+      .setTranslation(0, colliderCenterY, 0)
+      .setFriction(0)
       .setRestitution(0.1);
     world.createCollider(colliderDesc, this.body);
   }
 
   applyControls(input: InputManager, dt: number): void {
     const rotation = this.body.rotation();
-    const quat = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
-    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(quat);
+    _quat.set(rotation.x, rotation.y, rotation.z, rotation.w);
+    _forward.set(0, 0, 1).applyQuaternion(_quat);
+    _right.set(1, 0, 0).applyQuaternion(_quat);
 
     const linvel = this.body.linvel();
-    const planarVel = new THREE.Vector3(linvel.x, 0, linvel.z);
-    const forwardSpeed = planarVel.dot(forward);
-    const lateralSpeed = planarVel.dot(right);
+    const forwardSpeed = linvel.x * _forward.x + linvel.z * _forward.z;
+    const lateralSpeed = linvel.x * _right.x + linvel.z * _right.z;
 
     let targetForwardSpeed = 0;
     if (input.forward) targetForwardSpeed = input.boost ? BOOST_SPEED : MAX_SPEED;
@@ -98,11 +109,14 @@ export class Car {
     const grip = input.handbrake ? DRIFT_GRIP : NORMAL_GRIP;
     const newLateralSpeed = moveToward(lateralSpeed, 0, grip * dt);
 
-    const newVel = forward
-      .clone()
-      .multiplyScalar(this.forwardSpeed)
-      .add(right.clone().multiplyScalar(newLateralSpeed));
-    this.body.setLinvel({ x: newVel.x, y: linvel.y, z: newVel.z }, true);
+    this.body.setLinvel(
+      {
+        x: _forward.x * this.forwardSpeed + _right.x * newLateralSpeed,
+        y: linvel.y,
+        z: _forward.z * this.forwardSpeed + _right.z * newLateralSpeed,
+      },
+      true,
+    );
 
     let turnInput = 0;
     if (input.left) turnInput += 1;

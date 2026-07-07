@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 
+// Cap DPR so HiDPI screens don't quadruple the fragment load on the iGPU target.
+const MAX_PIXEL_RATIO = 1.5;
+
 export interface SceneBundle {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -19,7 +22,7 @@ export function createScene(container: HTMLElement): SceneBundle {
   camera.position.set(0, 4, 8);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
   renderer.setSize(window.innerWidth, window.innerHeight);
   container.appendChild(renderer.domElement);
 
@@ -31,6 +34,8 @@ export function createScene(container: HTMLElement): SceneBundle {
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    // Re-read DPR: moving the window between monitors can change it.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 

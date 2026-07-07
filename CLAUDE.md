@@ -46,9 +46,9 @@ src/
   core/
     scene.ts           # createScene(): THREE.Scene/camera/renderer/lights, resize handling
     physics.ts         # initPhysics(): await RAPIER.init(); returns a stepping RAPIER.World
-    input.ts           # InputManager: keydown/keyup -> forward/back/left/right getters (WASD + arrows)
+    input.ts           # InputManager: keydown/keyup -> forward/back/left/right/boost/handbrake getters; clears keys on blur
   entities/
-    car.ts             # Car class: yellow box mesh, update(input, dt) moves it via transforms
+    car.ts             # Car class: multi-box Group + Rapier rigid body; applyControls(input, dt) / syncFromPhysics(dt)
   world/
     ground.ts          # createGround(): flat ground plane factory
 ```
@@ -89,6 +89,17 @@ Design intent behind these boundaries (so future issues don't need refactors):
 - Steering adds `DRIFT_TURN_ASSIST` extra angular velocity on top of `TURN_RATE` while handbraking and turning — the "subtle rotational force" that helps the car rotate into the slide instead of just sliding straight.
 - `core/input.ts` gained `boost`/`handbrake` getters (Shift / Space) and now calls `preventDefault()` on all recognized action keys to stop Space from scrolling the page.
 - Verified numerically via a headless browser reading the rigid body's actual velocity: turning without handbrake keeps lateral speed under ~5% of total speed; turning with handbrake held pushes lateral speed to ~60% of total speed — a real, controllable slide, not cosmetic. Boost was confirmed to push speed measurably past `MAX_SPEED`.
+
+**Bug-fix pass (done):** a full 8-angle code review found and fixed:
+- **Fixed-timestep accumulator** in `main.ts`: `world.step()` advances a fixed 1/60s slice, so the sim is now stepped from an accumulator fed by real dt (game speed no longer scales with monitor refresh rate); `applyControls` runs once per physics step with `PHYSICS_STEP`, not per frame.
+- **Car collider now spans body-top to wheel-bottom** (with a `setTranslation` y-offset) so the car rests on its wheels instead of sinking them through the ground.
+- **Car collider friction is 0 on purpose**: the grip model in `applyControls` IS the friction. Contact friction on top was silently fighting the drive model (net accel was ~2.6 u/s² instead of ACCEL=10). If drift/accel tuning ever feels off after a collider change, check this first. Drift constants retuned after this change (`DRIFT_GRIP` 2.5→8, `DRIFT_TURN_ASSIST` 1.6→1.2); measured: 250ms handbrake tap → ~47° slip angle, recovery to ~3° within 400ms of release.
+- **Stuck-key fix**: `InputManager` clears held keys on window `blur` / `visibilitychange` (Alt-Tab no longer leaves the car driving itself).
+- **DPR clamped to 1.5** in `scene.ts` (and re-applied on resize for monitor moves) per the iGPU guardrail.
+- **`bootstrap()` failures now render an error overlay** instead of a silent blank page (e.g. if the Rapier WASM fails to load).
+- **Hot-loop allocations hoisted**: `applyControls` and the camera follow use module/closure-scope scratch objects instead of per-frame `new`/`clone()`.
+
+Known deferred findings (intentional, revisit later): planar velocity/angvel are still hard-overwritten each frame, which defeats Rapier's collision response for walls/obstacles — must move to impulse-based control (or blend solver velocity) as part of issues #6/#7; wheel spin uses commanded forward speed (cosmetically fine); car heading→direction math is duplicated between `car.ts` and the camera in `main.ts`.
 
 **Next up (not started):** exhaust smoke (issue #5), instanced environment trees (issue #6), bounciness/procedural animation tuning (issue #7), AI-gen texture/palette exploration (issue #8).
 
