@@ -48,11 +48,15 @@ src/
     physics.ts         # initPhysics(): await RAPIER.init(); returns a stepping RAPIER.World
     input.ts           # InputManager: keydown/keyup -> forward/back/left/right/boost/handbrake getters; clears keys on blur
   entities/
-    car.ts             # Car class: multi-box Group + Rapier rigid body; applyControls(input, dt) / syncFromPhysics(dt) / respawn()
+    car.ts             # Car class: async Car.create(world) loads public/models/taxi.glb via GLTFLoader + Rapier rigid body; applyControls(input, dt) / syncFromPhysics(dt) / respawn()
   ui/
     pauseMenu.ts       # PauseMenu: liquid-glass pause overlay (Esc or top-right button); Resume/Restart; injects its own CSS
   world/
     ground.ts          # createGround(): flat ground plane factory
+    track.ts           # createTrack(): visual-only oval stadium road (ShapeGeometry ring) + InstancedMesh curb markers, no collider
+public/
+  models/
+    taxi.glb           # Kenney Car Kit "taxi" model (CC0), see taxi-LICENSE.txt alongside it
 ```
 
 Design intent behind these boundaries (so future issues don't need refactors):
@@ -69,7 +73,7 @@ Design intent behind these boundaries (so future issues don't need refactors):
 - Vertex-lit/unlit materials only (`MeshLambertMaterial` or similar) — no heavy post-processing shaders, no shadow maps unless explicitly revisited.
 
 **Vehicle & physics blueprint:**
-- Player car: old yellow voxel vehicle.
+- Player car: old yellow voxel vehicle — currently Kenney's CC0 "taxi" model (`public/models/taxi.glb`, see Status).
 - Lightweight Rapier rigid body — wired up as of the rigid-body vehicle work (see Status).
 - Controls: drive/steer, dedicated boost, handbrake modifier.
 - Drift logic: holding handbrake should drastically lower lateral friction while applying a subtle rotational force, for high-angle arcade-style drifting.
@@ -101,11 +105,22 @@ Design intent behind these boundaries (so future issues don't need refactors):
 - **`bootstrap()` failures now render an error overlay** instead of a silent blank page (e.g. if the Rapier WASM fails to load).
 - **Hot-loop allocations hoisted**: `applyControls` and the camera follow use module/closure-scope scratch objects instead of per-frame `new`/`clone()`.
 
-Known deferred findings (intentional, revisit later): planar velocity/angvel are still hard-overwritten each frame, which defeats Rapier's collision response for walls/obstacles — must move to impulse-based control (or blend solver velocity) as part of issues #6/#7; wheel spin uses commanded forward speed (cosmetically fine); car heading→direction math is duplicated between `car.ts` and the camera in `main.ts`.
+Known deferred findings (intentional, revisit later): wheel spin uses commanded forward speed (cosmetically fine); car heading→direction math is duplicated between `car.ts` and the camera in `main.ts`.
+
+Previously this section also flagged that hard-overwriting planar velocity/angvel each frame would defeat Rapier's collision response against walls. Playtested against two temporary test walls and it turned out fine in practice: `applyControls` reads the body's *actual* post-solve `linvel()` at the start of every frame before deciding a new velocity, so a wall's zero-out from the previous step sticks, and holding forward just re-ramps into the wall at `ACCEL` rather than phasing through. The one real gap: an angled/glancing hit can't spin the car, since `setAngvel` is always fully driven by steering input, never by impact — revisit only if that ever matters for gameplay.
 
 **Pause menu (done):** `src/ui/pauseMenu.ts` — Apple-liquid-glass-styled DOM overlay (layered CSS glass: translucent blue gradient + `backdrop-filter: blur/saturate` + specular rim border + inner highlight; the SVG-displacement refraction layer was deliberately skipped as Chromium-only and GPU-heavy per the iGPU guardrail). Esc or the top-right glass button pauses; Resume/Restart buttons; Restart calls `car.respawn()` (resets body transform + velocities + `forwardSpeed`). While paused, `main.ts` skips accumulator feed and stepping but keeps rendering so the glass has a live frame to blur. Buttons call `.blur()` after click so a focused button can't be re-triggered by Space (handbrake).
 
-**Next up (not started):** exhaust smoke (issue #5), instanced environment trees (issue #6), bounciness/procedural animation tuning (issue #7), AI-gen texture/palette exploration (issue #8).
+**Voxel car model swap (done):** Replaced the procedural box-built car with Kenney's CC0 "taxi" model (`public/models/taxi.glb`, from Kenney's Car Kit — https://kenney.nl/assets/car-kit). `entities/car.ts`'s constructor is now private; construction goes through `static async Car.create(world)`, which `GLTFLoader.loadAsync`s the model, then:
+- Finds the four wheel nodes by name (`wheel-front-right`, `wheel-front-left`, `wheel-back-left`, `wheel-back-right`) for spin animation — same `wheel.rotation.x += spin` approach as before, now driven by a `wheelRadius` measured from the wheel node's own bounding box instead of a hardcoded constant.
+- Sizes and centers the Rapier collider from `THREE.Box3().setFromObject(model)` instead of hand-picked box dimensions, so the physics shape tracks whatever model is loaded.
+- Computes spawn height as `-box.min.y + 0.02`, since the model is authored with its wheel-bottom near local y = 0.
+- `main.ts` now does `const car = await Car.create(world)` instead of `new Car(world)`.
+Not yet verified: whether the wheel-spin axis is visually correct for this specific model (inferred from the old cylinder-wheel convention, not confirmed against Kenney's rig), and whether this particular model (vs. other cars in the same free pack — sedan, hatchback-sports, police, etc.) is the right visual fit.
+
+**Oval loop track (done):** `src/world/track.ts` — a stadium-shaped (two straights + two semicircle turns) asphalt ring built as a single `THREE.ShapeGeometry` with a hole (outer boundary shape, inner boundary as a hole path), plus alternating red/white curb markers along both edges via `InstancedMesh`. Purely a visual driving line — no Rapier collider on the road surface, so driving off it onto the grass is still allowed. The track is positioned so the car's spawn point sits on the near straight. Not yet playtested for scale/curb density.
+
+**Next up (not started):** exhaust smoke (issue #5), instanced environment trees (issue #6), bounciness/procedural animation tuning (issue #7), AI-gen texture/palette exploration (issue #8). Also pending playtest feedback on the new car model and track (see above).
 
 ## Working style
 

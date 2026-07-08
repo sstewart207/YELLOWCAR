@@ -1,11 +1,10 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { InputManager } from '../core/input';
 
-const BODY_SIZE = { x: 1, y: 0.5, z: 2 };
-const CABIN_SIZE = { x: 0.7, y: 0.35, z: 0.9 };
-const WHEEL_RADIUS = 0.28;
-const WHEEL_WIDTH = 0.2;
+const MODEL_URL = '/models/taxi.glb';
+const WHEEL_NAMES = ['wheel-front-right', 'wheel-front-left', 'wheel-back-left', 'wheel-back-right'];
 
 const MAX_SPEED = 8;
 const BOOST_SPEED = 13;
@@ -30,65 +29,67 @@ export class Car {
   readonly group: THREE.Group;
 
   private body: RAPIER.RigidBody;
-  private wheels: THREE.Mesh[];
+  private wheels: THREE.Object3D[];
+  private wheelRadius: number;
   private forwardSpeed = 0;
+  private spawnHeight: number;
 
-  constructor(world: RAPIER.World) {
+  private constructor(
+    world: RAPIER.World,
+    model: THREE.Object3D,
+    wheels: THREE.Object3D[],
+    wheelRadius: number,
+    colliderHalfExtents: THREE.Vector3,
+    colliderCenter: THREE.Vector3,
+    spawnHeight: number,
+  ) {
     this.group = new THREE.Group();
-
-    const bodyMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(BODY_SIZE.x, BODY_SIZE.y, BODY_SIZE.z),
-      new THREE.MeshLambertMaterial({ color: 0xf4c515 }),
-    );
-    this.group.add(bodyMesh);
-
-    const cabinMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(CABIN_SIZE.x, CABIN_SIZE.y, CABIN_SIZE.z),
-      new THREE.MeshLambertMaterial({ color: 0xd9ad10 }),
-    );
-    cabinMesh.position.set(0, BODY_SIZE.y / 2 + CABIN_SIZE.y / 2, -0.15);
-    this.group.add(cabinMesh);
-
-    const wheelGeometry = new THREE.CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, WHEEL_WIDTH, 12);
-    wheelGeometry.rotateZ(Math.PI / 2);
-    const wheelMaterial = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
-
-    const wheelOffsetX = BODY_SIZE.x / 2 + WHEEL_WIDTH / 2 - 0.02;
-    const wheelOffsetY = -BODY_SIZE.y / 2 + 0.05;
-    const wheelOffsetZ = BODY_SIZE.z / 2 - WHEEL_RADIUS - 0.05;
-    const wheelPositions: [number, number, number][] = [
-      [-wheelOffsetX, wheelOffsetY, wheelOffsetZ],
-      [wheelOffsetX, wheelOffsetY, wheelOffsetZ],
-      [-wheelOffsetX, wheelOffsetY, -wheelOffsetZ],
-      [wheelOffsetX, wheelOffsetY, -wheelOffsetZ],
-    ];
-
-    this.wheels = wheelPositions.map(([x, y, z]) => {
-      const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-      wheel.position.set(x, y, z);
-      this.group.add(wheel);
-      return wheel;
-    });
+    this.group.add(model);
+    this.wheels = wheels;
+    this.wheelRadius = wheelRadius;
+    this.spawnHeight = spawnHeight;
 
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(0, 1, 0)
+      .setTranslation(0, spawnHeight, 0)
       .enabledRotations(false, true, false)
       .setLinearDamping(0.5)
       .setAngularDamping(4);
     this.body = world.createRigidBody(bodyDesc);
 
-    // Collider spans from body top down to the wheel bottoms so the car
-    // rests on its wheels rather than sinking them through the ground.
-    const wheelBottom = wheelOffsetY - WHEEL_RADIUS;
-    const colliderHalfY = (BODY_SIZE.y / 2 - wheelBottom) / 2;
-    const colliderCenterY = (BODY_SIZE.y / 2 + wheelBottom) / 2;
     // Friction is zero because applyControls implements grip itself (NORMAL_GRIP /
     // DRIFT_GRIP); contact friction on top would fight the drive model every step.
-    const colliderDesc = RAPIER.ColliderDesc.cuboid(BODY_SIZE.x / 2, colliderHalfY, BODY_SIZE.z / 2)
-      .setTranslation(0, colliderCenterY, 0)
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(
+      colliderHalfExtents.x,
+      colliderHalfExtents.y,
+      colliderHalfExtents.z,
+    )
+      .setTranslation(colliderCenter.x, colliderCenter.y, colliderCenter.z)
       .setFriction(0)
       .setRestitution(0.1);
     world.createCollider(colliderDesc, this.body);
+  }
+
+  static async create(world: RAPIER.World): Promise<Car> {
+    const gltf = await new GLTFLoader().loadAsync(MODEL_URL);
+    const model = gltf.scene;
+
+    const wheels = WHEEL_NAMES.map((name) => {
+      const wheel = model.getObjectByName(name);
+      if (!wheel) throw new Error(`Car model missing expected node: ${name}`);
+      return wheel;
+    });
+
+    const wheelBox = new THREE.Box3().setFromObject(wheels[0]);
+    const wheelRadius = wheelBox.getSize(new THREE.Vector3()).y / 2;
+
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    // Model is authored with wheel-bottom at y ~= 0; lift the body so the
+    // lowest point of the bounding box rests just above the ground plane.
+    const spawnHeight = -box.min.y + 0.02;
+
+    return new Car(world, model, wheels, wheelRadius, size.multiplyScalar(0.5), center, spawnHeight);
   }
 
   applyControls(input: InputManager, dt: number): void {
@@ -126,7 +127,7 @@ export class Car {
   }
 
   respawn(): void {
-    this.body.setTranslation({ x: 0, y: 1, z: 0 }, true);
+    this.body.setTranslation({ x: 0, y: this.spawnHeight, z: 0 }, true);
     this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
@@ -139,7 +140,7 @@ export class Car {
     this.group.position.set(t.x, t.y, t.z);
     this.group.quaternion.set(r.x, r.y, r.z, r.w);
 
-    const spin = (this.forwardSpeed / WHEEL_RADIUS) * dt;
+    const spin = (this.forwardSpeed / this.wheelRadius) * dt;
     for (const wheel of this.wheels) {
       wheel.rotation.x += spin;
     }
