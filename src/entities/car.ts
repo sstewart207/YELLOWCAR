@@ -27,8 +27,11 @@ const TRANSMISSION_EFFICIENCY = 0.9;
 const BOOST_TORQUE_MULT = 1.5;
 // Traction-limited launch cap: real tires can't transmit unlimited torque to
 // the road either, so raw low-gear force is clamped rather than left to
-// produce an instant, wheel-spinning jump to full accel.
-const MAX_FORWARD_ACCEL = 14;
+// produce an instant, wheel-spinning jump to full accel. This is the main
+// knob controlling 0-to-top-speed pacing (currently ~4s to ~94mph) — the raw
+// torque*ratio*finalDrive force is otherwise so far past this cap in low gear
+// that the whole climb happened in ~1s and gear shifts were imperceptible.
+const MAX_FORWARD_ACCEL = 3;
 
 const DRAG_COEFF = 64; // aerodynamic drag: opposing force = DRAG_COEFF * v^2
 const ROLL_RESISTANCE = 100; // constant resistance whenever moving, on top of drag
