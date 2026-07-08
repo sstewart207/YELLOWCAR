@@ -6,24 +6,38 @@ import type { InputManager } from '../core/input';
 const MODEL_URL = '/models/taxi.glb';
 const WHEEL_NAMES = ['wheel-front-right', 'wheel-front-left', 'wheel-back-left', 'wheel-back-right'];
 
-// Each gear has its own top speed and its own (progressively lower)
-// acceleration, so holding the throttle feels like climbing through gears
-// rather than ramping once to a flat cap.
-const GEARS = [
-  { ceiling: 3.5, accel: 16 },
-  { ceiling: 6.5, accel: 11 },
-  { ceiling: 9, accel: 7.5 },
-  { ceiling: 11, accel: 5 },
+// Real drivetrain model: engine torque curve (RPM -> torque) x gear ratio x
+// final drive / wheel radius = drive force; F = m*a. Top speed emerges from
+// where drive force equals aerodynamic drag, rather than being hard-capped.
+const VEHICLE_MASS = 1200;
+const TORQUE_CURVE: [rpm: number, torque: number][] = [
+  [800, 380],
+  [2000, 520],
+  [4000, 620],
+  [5500, 560],
+  [6800, 420],
+  [7500, 150],
 ];
-const NORMAL_TOP_SPEED = GEARS[GEARS.length - 1].ceiling;
-const BOOST_TOP_SPEED = 17;
-const BOOST_ACCEL = 8; // used once past the top normal gear while boosting (overdrive)
-const REVERSE_SPEED = 4;
-const REVERSE_ACCEL = 8;
-const COAST_DECEL = 6; // deceleration toward 0 when no throttle/reverse input
+const IDLE_RPM = TORQUE_CURVE[0][0];
+const SHIFT_UP_RPM = 6800;
+const SHIFT_DOWN_RPM = 3200; // gap below SHIFT_UP_RPM prevents gear hunting at the boundary
+const GEAR_RATIOS = [2.8, 1.9, 1.35, 1.0];
+const FINAL_DRIVE = 20;
+const TRANSMISSION_EFFICIENCY = 0.9;
+const BOOST_TORQUE_MULT = 1.5;
+// Traction-limited launch cap: real tires can't transmit unlimited torque to
+// the road either, so raw low-gear force is clamped rather than left to
+// produce an instant, wheel-spinning jump to full accel.
+const MAX_FORWARD_ACCEL = 14;
+
+const DRAG_COEFF = 64; // aerodynamic drag: opposing force = DRAG_COEFF * v^2
+const ROLL_RESISTANCE = 100; // constant resistance whenever moving, on top of drag
+const REVERSE_FORCE = 1100;
+const BRAKE_DECEL = 20; // direct deceleration toward a stop; never overshoots into reverse
 
 const MAX_TURN_RATE = 3.2; // at a standstill
-const MIN_TURN_RATE = 1.4; // at/above NORMAL_TOP_SPEED
+const MIN_TURN_RATE = 1.4; // at/above TURN_TAPER_SPEED
+const TURN_TAPER_SPEED = 12; // roughly the unboosted top speed
 const DRIFT_TURN_ASSIST = 1.2;
 const NORMAL_GRIP = 24;
 const DRIFT_GRIP = 8;
@@ -36,12 +50,17 @@ function moveToward(current: number, target: number, maxDelta: number): number {
   return current + Math.sign(delta) * maxDelta;
 }
 
-function gearForSpeed(speed: number): { index: number; accel: number } {
-  for (let i = 0; i < GEARS.length; i++) {
-    if (speed < GEARS[i].ceiling) return { index: i + 1, accel: GEARS[i].accel };
+function lookupTorque(rpm: number): number {
+  const clamped = Math.max(TORQUE_CURVE[0][0], Math.min(rpm, TORQUE_CURVE[TORQUE_CURVE.length - 1][0]));
+  for (let i = 0; i < TORQUE_CURVE.length - 1; i++) {
+    const [rpmA, torqueA] = TORQUE_CURVE[i];
+    const [rpmB, torqueB] = TORQUE_CURVE[i + 1];
+    if (clamped <= rpmB) {
+      const t = (clamped - rpmA) / (rpmB - rpmA);
+      return torqueA + (torqueB - torqueA) * t;
+    }
   }
-  const top = GEARS[GEARS.length - 1];
-  return { index: GEARS.length, accel: top.accel };
+  return TORQUE_CURVE[TORQUE_CURVE.length - 1][1];
 }
 
 const _quat = new THREE.Quaternion();
@@ -55,7 +74,8 @@ export class Car {
   private wheels: THREE.Object3D[];
   private wheelRadius: number;
   private forwardSpeed = 0;
-  private gearIndex = 1;
+  private gear = 1;
+  private engineRpm = IDLE_RPM;
   private spawnHeight: number;
 
   private constructor(
@@ -76,7 +96,11 @@ export class Car {
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(0, spawnHeight, 0)
       .enabledRotations(false, true, false)
-      .setLinearDamping(0.5)
+      // No linear damping: applyControls owns forward/lateral speed outright every
+      // frame (drivetrain force model + explicit grip decay). Any damping here
+      // silently fights that model at high speed/low accel, capping top speed well
+      // below what the drivetrain math intends (this bit us once already).
+      .setLinearDamping(0)
       .setAngularDamping(4);
     this.body = world.createRigidBody(bodyDesc);
 
@@ -89,7 +113,8 @@ export class Car {
     )
       .setTranslation(colliderCenter.x, colliderCenter.y, colliderCenter.z)
       .setFriction(0)
-      .setRestitution(0.1);
+      .setRestitution(0.1)
+      .setMass(VEHICLE_MASS);
     world.createCollider(colliderDesc, this.body);
   }
 
@@ -126,23 +151,40 @@ export class Car {
     const forwardSpeed = linvel.x * _forward.x + linvel.z * _forward.z;
     const lateralSpeed = linvel.x * _right.x + linvel.z * _right.z;
 
-    let targetForwardSpeed = 0;
-    let accel = COAST_DECEL;
-    if (input.forward) {
-      const gear = gearForSpeed(forwardSpeed);
-      if (input.boost) {
-        targetForwardSpeed = BOOST_TOP_SPEED;
-        accel = forwardSpeed < NORMAL_TOP_SPEED ? gear.accel : BOOST_ACCEL;
-      } else {
-        targetForwardSpeed = NORMAL_TOP_SPEED;
-        accel = gear.accel;
+    // Gearbox tracks current wheel speed continuously, like an automatic
+    // transmission, independent of whether the throttle is currently held —
+    // so it keeps shifting appropriately through coasting or braking too.
+    const wheelAngularSpeed = Math.abs(forwardSpeed) / this.wheelRadius;
+    this.engineRpm = Math.max(
+      IDLE_RPM,
+      wheelAngularSpeed * GEAR_RATIOS[this.gear - 1] * FINAL_DRIVE * (60 / (2 * Math.PI)),
+    );
+    if (this.engineRpm > SHIFT_UP_RPM && this.gear < GEAR_RATIOS.length) this.gear++;
+    else if (this.engineRpm < SHIFT_DOWN_RPM && this.gear > 1) this.gear--;
+
+    let nextForwardSpeed: number;
+    if (input.back && forwardSpeed > 0.1) {
+      // Braking: strong direct deceleration toward a stop, never overshoots into reverse.
+      nextForwardSpeed = moveToward(forwardSpeed, 0, BRAKE_DECEL * dt);
+    } else {
+      let netForce = 0;
+      if (input.forward) {
+        const torque = lookupTorque(this.engineRpm) * (input.boost ? BOOST_TORQUE_MULT : 1);
+        netForce += (torque * GEAR_RATIOS[this.gear - 1] * FINAL_DRIVE * TRANSMISSION_EFFICIENCY) / this.wheelRadius;
+      } else if (input.back) {
+        netForce -= REVERSE_FORCE;
       }
-    } else if (input.back) {
-      targetForwardSpeed = -REVERSE_SPEED;
-      accel = REVERSE_ACCEL;
+      if (Math.abs(forwardSpeed) > 0.001) {
+        netForce -= Math.sign(forwardSpeed) * (DRAG_COEFF * forwardSpeed * forwardSpeed + ROLL_RESISTANCE);
+      }
+      let accel = netForce / VEHICLE_MASS;
+      if (input.forward) accel = Math.min(accel, MAX_FORWARD_ACCEL);
+      nextForwardSpeed = forwardSpeed + accel * dt;
+      if (!input.forward && !input.back && Math.sign(nextForwardSpeed) !== Math.sign(forwardSpeed)) {
+        nextForwardSpeed = 0;
+      }
     }
-    this.forwardSpeed = moveToward(forwardSpeed, targetForwardSpeed, accel * dt);
-    this.gearIndex = this.forwardSpeed < -0.5 ? 0 : gearForSpeed(Math.abs(this.forwardSpeed)).index;
+    this.forwardSpeed = nextForwardSpeed;
 
     const grip = input.handbrake ? DRIFT_GRIP : NORMAL_GRIP;
     const newLateralSpeed = moveToward(lateralSpeed, 0, grip * dt);
@@ -159,7 +201,7 @@ export class Car {
     let turnInput = 0;
     if (input.left) turnInput += 1;
     if (input.right) turnInput -= 1;
-    const speedFactor = Math.min(Math.abs(forwardSpeed) / NORMAL_TOP_SPEED, 1);
+    const speedFactor = Math.min(Math.abs(forwardSpeed) / TURN_TAPER_SPEED, 1);
     let turnRate = MAX_TURN_RATE + (MIN_TURN_RATE - MAX_TURN_RATE) * speedFactor;
     if (input.handbrake && turnInput !== 0) turnRate += DRIFT_TURN_ASSIST;
     this.body.setAngvel({ x: 0, y: turnInput * turnRate, z: 0 }, true);
@@ -170,7 +212,7 @@ export class Car {
   }
 
   get gearLabel(): string {
-    return this.gearIndex === 0 ? 'R' : String(this.gearIndex);
+    return this.forwardSpeed < -0.5 ? 'R' : String(this.gear);
   }
 
   respawn(): void {
@@ -179,7 +221,8 @@ export class Car {
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.forwardSpeed = 0;
-    this.gearIndex = 1;
+    this.gear = 1;
+    this.engineRpm = IDLE_RPM;
   }
 
   syncFromPhysics(dt: number): void {
