@@ -6,6 +6,7 @@ import { createGround } from './world/ground';
 import { createTrack } from './world/track';
 import { Car } from './entities/car';
 import { PauseMenu } from './ui/pauseMenu';
+import { Speedometer } from './ui/speedometer';
 
 async function bootstrap() {
   const container = document.getElementById('app');
@@ -24,6 +25,7 @@ async function bootstrap() {
 
   const input = new InputManager();
   const menu = new PauseMenu(() => car.respawn());
+  const speedometer = new Speedometer();
 
   const cameraOffset = new THREE.Vector3(0, 5, -10);
   const cameraPos = new THREE.Vector3();
@@ -55,6 +57,8 @@ async function bootstrap() {
     cameraPos.copy(cameraOffset).applyEuler(car.group.rotation).add(car.group.position);
     camera.position.copy(cameraPos);
     camera.lookAt(car.group.position);
+
+    speedometer.update(car.speedMph, car.gearLabel);
 
     renderer.render(scene, camera);
     requestAnimationFrame(tick);

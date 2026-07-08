@@ -6,19 +6,42 @@ import type { InputManager } from '../core/input';
 const MODEL_URL = '/models/taxi.glb';
 const WHEEL_NAMES = ['wheel-front-right', 'wheel-front-left', 'wheel-back-left', 'wheel-back-right'];
 
-const MAX_SPEED = 8;
-const BOOST_SPEED = 13;
+// Each gear has its own top speed and its own (progressively lower)
+// acceleration, so holding the throttle feels like climbing through gears
+// rather than ramping once to a flat cap.
+const GEARS = [
+  { ceiling: 3.5, accel: 16 },
+  { ceiling: 6.5, accel: 11 },
+  { ceiling: 9, accel: 7.5 },
+  { ceiling: 11, accel: 5 },
+];
+const NORMAL_TOP_SPEED = GEARS[GEARS.length - 1].ceiling;
+const BOOST_TOP_SPEED = 17;
+const BOOST_ACCEL = 8; // used once past the top normal gear while boosting (overdrive)
 const REVERSE_SPEED = 4;
-const ACCEL = 10;
-const TURN_RATE = 2.8;
+const REVERSE_ACCEL = 8;
+const COAST_DECEL = 6; // deceleration toward 0 when no throttle/reverse input
+
+const MAX_TURN_RATE = 3.2; // at a standstill
+const MIN_TURN_RATE = 1.4; // at/above NORMAL_TOP_SPEED
 const DRIFT_TURN_ASSIST = 1.2;
 const NORMAL_GRIP = 24;
 const DRIFT_GRIP = 8;
+
+const MPH_PER_UNIT = 8; // cosmetic scale for the speedometer readout only
 
 function moveToward(current: number, target: number, maxDelta: number): number {
   const delta = target - current;
   if (Math.abs(delta) <= maxDelta) return target;
   return current + Math.sign(delta) * maxDelta;
+}
+
+function gearForSpeed(speed: number): { index: number; accel: number } {
+  for (let i = 0; i < GEARS.length; i++) {
+    if (speed < GEARS[i].ceiling) return { index: i + 1, accel: GEARS[i].accel };
+  }
+  const top = GEARS[GEARS.length - 1];
+  return { index: GEARS.length, accel: top.accel };
 }
 
 const _quat = new THREE.Quaternion();
@@ -32,6 +55,7 @@ export class Car {
   private wheels: THREE.Object3D[];
   private wheelRadius: number;
   private forwardSpeed = 0;
+  private gearIndex = 1;
   private spawnHeight: number;
 
   private constructor(
@@ -103,9 +127,22 @@ export class Car {
     const lateralSpeed = linvel.x * _right.x + linvel.z * _right.z;
 
     let targetForwardSpeed = 0;
-    if (input.forward) targetForwardSpeed = input.boost ? BOOST_SPEED : MAX_SPEED;
-    else if (input.back) targetForwardSpeed = -REVERSE_SPEED;
-    this.forwardSpeed = moveToward(forwardSpeed, targetForwardSpeed, ACCEL * dt);
+    let accel = COAST_DECEL;
+    if (input.forward) {
+      const gear = gearForSpeed(forwardSpeed);
+      if (input.boost) {
+        targetForwardSpeed = BOOST_TOP_SPEED;
+        accel = forwardSpeed < NORMAL_TOP_SPEED ? gear.accel : BOOST_ACCEL;
+      } else {
+        targetForwardSpeed = NORMAL_TOP_SPEED;
+        accel = gear.accel;
+      }
+    } else if (input.back) {
+      targetForwardSpeed = -REVERSE_SPEED;
+      accel = REVERSE_ACCEL;
+    }
+    this.forwardSpeed = moveToward(forwardSpeed, targetForwardSpeed, accel * dt);
+    this.gearIndex = this.forwardSpeed < -0.5 ? 0 : gearForSpeed(Math.abs(this.forwardSpeed)).index;
 
     const grip = input.handbrake ? DRIFT_GRIP : NORMAL_GRIP;
     const newLateralSpeed = moveToward(lateralSpeed, 0, grip * dt);
@@ -122,8 +159,18 @@ export class Car {
     let turnInput = 0;
     if (input.left) turnInput += 1;
     if (input.right) turnInput -= 1;
-    const turnRate = input.handbrake && turnInput !== 0 ? TURN_RATE + DRIFT_TURN_ASSIST : TURN_RATE;
+    const speedFactor = Math.min(Math.abs(forwardSpeed) / NORMAL_TOP_SPEED, 1);
+    let turnRate = MAX_TURN_RATE + (MIN_TURN_RATE - MAX_TURN_RATE) * speedFactor;
+    if (input.handbrake && turnInput !== 0) turnRate += DRIFT_TURN_ASSIST;
     this.body.setAngvel({ x: 0, y: turnInput * turnRate, z: 0 }, true);
+  }
+
+  get speedMph(): number {
+    return Math.abs(this.forwardSpeed) * MPH_PER_UNIT;
+  }
+
+  get gearLabel(): string {
+    return this.gearIndex === 0 ? 'R' : String(this.gearIndex);
   }
 
   respawn(): void {
@@ -132,6 +179,7 @@ export class Car {
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.forwardSpeed = 0;
+    this.gearIndex = 1;
   }
 
   syncFromPhysics(dt: number): void {
