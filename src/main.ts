@@ -3,8 +3,10 @@ import { createScene } from './core/scene';
 import { initPhysics } from './core/physics';
 import { InputManager } from './core/input';
 import { createGround } from './world/ground';
+import { createTrack } from './world/track';
 import { Car } from './entities/car';
 import { PauseMenu } from './ui/pauseMenu';
+import { Speedometer } from './ui/speedometer';
 
 async function bootstrap() {
   const container = document.getElementById('app');
@@ -16,13 +18,16 @@ async function bootstrap() {
   const ground = createGround(world);
   scene.add(ground);
 
-  const car = new Car(world);
+  for (const piece of createTrack()) scene.add(piece);
+
+  const car = await Car.create(world);
   scene.add(car.group);
 
   const input = new InputManager();
   const menu = new PauseMenu(() => car.respawn());
+  const speedometer = new Speedometer();
 
-  const cameraOffset = new THREE.Vector3(0, 4, -8);
+  const cameraOffset = new THREE.Vector3(0, 5, -10);
   const cameraPos = new THREE.Vector3();
 
   // Rapier integrates a fixed slice of simulated time per step() call, so the
@@ -52,6 +57,8 @@ async function bootstrap() {
     cameraPos.copy(cameraOffset).applyEuler(car.group.rotation).add(car.group.position);
     camera.position.copy(cameraPos);
     camera.lookAt(car.group.position);
+
+    speedometer.update(car.speedMph, car.gearLabel);
 
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
